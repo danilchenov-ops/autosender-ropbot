@@ -6180,7 +6180,7 @@ def page_taymingi(conn, period="base", show_tabs=True):
     blocks.append(_tm_torgi_block(conn, now, since, label))
 
     # Блок «Только выигранные» убран решением Тимофея 28.08.2026
-    # (код в бэкапе dash.py.bak-nowon, вернуть — скопировать оттуда).
+    # (код в /opt/ropbot/backups/manual-bak-2026-09-13/web/dash.py.bak-nowon, вернуть — скопировать оттуда).
 
     rows_card = _tm_rows(
         conn, "10", ("12", "13", "CONVERTED"), since,
