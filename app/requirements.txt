@@ -1,0 +1,5 @@
+psycopg[binary]==3.2.3
+requests==2.32.3
+faster-whisper==1.1.0
+PySocks==1.7.1
+reportlab==4.2.5

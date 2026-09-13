@@ -1,0 +1,2 @@
+# Telegram: пул персональных ссылок + контрольная сумма подписчиков (добавлено 07.09.2026)
+*/5 * * * * flock -n /run/lock/tg_pool.lock /opt/ropbot/bin/tg_pool.sh >> /var/log/ropbot/tg_pool.log 2>&1

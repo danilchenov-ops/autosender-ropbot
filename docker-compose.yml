@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rop
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-rop}
+      POSTGRES_DB: rop
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"     # только localhost, наружу не торчит
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rop"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  collector:
+    build: ./app
+    restart: unless-stopped
+    command: python collector.py
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PG_DSN: postgresql://rop:${PG_PASSWORD:-rop}@postgres:5432/rop
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  asr:
+    build: ./app
+    restart: unless-stopped
+    # Потолок памяти: 27.08.2026 оба ASR раздулись до ~3.5 ГБ RSS каждый,
+    # глобальный OOM повесил сервер целиком (SSH не отвечал, нужен был ребут).
+    # С лимитом OOM убивает только процесс в контейнере, тот перезапускается.
+    command: python asr_worker.py
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PG_DSN: postgresql://rop:${PG_PASSWORD:-rop}@postgres:5432/rop
+      OMP_NUM_THREADS: ${WHISPER_THREADS:-4}
+    volumes:
+      - models:/data/models
+      - audio:/data/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Потолки: 27.08.2026 оба ASR раздувались до ~3.5 ГБ и дважды вешали
+    # сервер: сперва глобальным OOM, затем — выеданием свопа при лимите RAM.
+    # mem_limit + memswap_limit равны => своп контейнеру запрещён: при
+    # переборе памяти умирает процесс в контейнере и перезапускается,
+    # сервер целиком не виснет.
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: "${ASR_CPU_LIMIT:-4}"
+
+  llm:
+    build: ./app
+    restart: unless-stopped
+    command: python extractor.py
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PG_DSN: postgresql://rop:${PG_PASSWORD:-rop}@postgres:5432/rop
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tgbot:
+    build: ./app
+    restart: unless-stopped
+    command: python tg_register.py
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PG_DSN: postgresql://rop:${PG_PASSWORD:-rop}@postgres:5432/rop
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  models:
+  audio:

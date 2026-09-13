@@ -1,0 +1,57 @@
+# Виртуальный РОП — скоринг заявок (добавлено 19.08.2026)
+# Виртуальный РОП — скоринг заявок по поведению (обновлено 19.08.2026 вечером)
+*/5 * * * * docker exec ropbot-collector-1 sh -c 'python metrika.py enrich --days 45 --limit 100 && python scorer.py score' >> /var/log/ropbot/pipeline.log 2>&1
+0 22 * * * docker exec ropbot-collector-1 python metrika.py enrich --days 440 --skip 45 --limit 3500 >> /var/log/ropbot/metrika.log 2>&1
+10 1 * * * docker exec ropbot-collector-1 python scorer.py train --model all >> /var/log/ropbot/scorer.log 2>&1
+# Реестр — ежедневный снимок фактического состояния
+0 6 * * * /opt/knowledge/audit.sh >/dev/null 2>&1
+*/30 * * * * docker exec ropbot-collector-1 python metrika.py match --limit 400 >> /var/log/ropbot/metrika.log 2>&1
+0 3 * * * /opt/ropbot/db/backup.sh >> /var/log/ropbot-backup.log 2>&1
+# Виртуальный РОП — портрет менеджера (добавлено 20.08.2026)
+*/5 * * * * docker exec ropbot-collector-1 python presence.py >> /var/log/ropbot/presence.log 2>&1
+30 23 * * 0 docker exec ropbot-collector-1 python profile.py >> /var/log/ropbot/profile.log 2>&1
+7 * * * * cat /opt/ropbot/db/asr_priority.sql | docker exec -i ropbot-postgres-1 psql -U rop -d rop -q >> /var/log/ropbot/asr_priority.log 2>&1
+*/10 * * * * docker exec ropbot-collector-1 sh -c "python composite.py --days 90 --limit 300 && python marker.py --limit 300" >> /var/log/ropbot/marker.log 2>&1
+# Панели менеджеров — пересборка страниц (добавлено 22.08.2026)
+# Панели менеджеров — пересборка страниц (22.08.2026). flock: на загруженной
+# машине прогоны не наслаиваются друг на друга.
+# Выпуск сертификата: имя danilchenov.fvds.ru общее для всех клиентов FirstVDS,
+# недельный лимит Let's Encrypt выбирают чужие. Ловим окно, после успеха снимается сам.
+# Актуальные цены и модели — ежемесячный пересчёт, окно 6 мес (добавлено 22.08.2026)
+40 3 1 * * cd /opt/ropbot && cat lab/prices_models.py | docker exec -i ropbot-collector-1 python - --json > /root/out/actual_prices_models.json 2>>/var/log/ropbot/prices_models.log && cat lab/prices_models.py | docker exec -i ropbot-collector-1 python - --md > /root/out/actual_prices_models.md 2>>/var/log/ropbot/prices_models.log
+
+# Светлане: лучший и худший разговор недели (добавлено 23.08.2026)
+# 03:00 MSK = 10:00 Влд, по будням. Код подаётся в контейнер через stdin.
+0 3 * * 1-5 docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/bestworst.py >> /var/log/ropbot/bestworst.log 2>&1
+# Панели: живые страницы (дашборды) — каждую минуту, ~2 с одним процессом
+* * * * * flock -n /tmp/dash.lock /opt/ropbot/web/build_now.sh >> /var/log/ropbot/dash.log 2>&1
+# Панели: всё остальное (страница «Скрипт», хаб, журнал ленты) — раз в 15 минут
+*/15 * * * * flock -n /tmp/dash.lock /opt/ropbot/web/build.sh >> /var/log/ropbot/dash.log 2>&1
+# Статусы лидов в stage_history: Битрикс отдаёт STATUS_ID, старый образ пишет пусто.
+# Дозаполнение до пересборки образа (crm_sync.py уже исправлен). Добавлено 25.08.2026.
+13,43 * * * * docker exec -i ropbot-collector-1 python - --days 3 < /opt/ropbot/app/stagehist_fix.py >> /var/log/ropbot/stagehist_fix.log 2>&1
+
+# Слепок работы менеджеров: ежедневный снимок manager_snapshot (25.08.2026).
+# 23:15 MSK = 06:15 Влд следующего дня — снимок покрывает полные прошедшие сутки.
+15 23 * * * docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/snapshot.py >> /var/log/ropbot/snapshot.log 2>&1
+
+# QA: недельный план «кому что тренировать» (25.08.2026).
+# 02:10 MSK понедельника = 09:10 Влд — рекомендации замораживаются на неделю.
+10 2 * * 1 docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/qa_advice.py >> /var/log/ropbot/qa_advice.log 2>&1
+
+# Сторож баланса ProxyAPI: если деньги кончились — алерт Тимофею в бот (25.08.2026).
+*/15 * * * * docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/balance_watch.py >> /var/log/ropbot/balance_watch.log 2>&1
+*/30 * * * * /opt/knowledge/watch.sh >> /var/log/kbwatch.log 2>&1
+
+# СМС-приветствие новым лидам через SMSGate (27.08.2026). Выключатель: файл /opt/ropbot/sms_on
+* * * * * [ -f /opt/ropbot/sms_on ] && flock -n /tmp/smsd.lock docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/smsd.py >> /var/log/ropbot/smsd.log 2>&1
+# Ночной снимок баллов Visual, 23:55 Влд (29.08.2026)
+55 13 * * * docker exec -i ropbot-collector-1 python - < /opt/ropbot/web/visual_daily.py >> /var/log/ropbot/visual.log 2>&1
+# Сторож телефонов-шлюзов: сигнал руководителям, если СМС не уходят (31.08.2026)
+*/15 * * * * [ -f /opt/ropbot/sms_on ] && flock -n /tmp/sms_watch.lock docker exec -i ropbot-collector-1 python - < /opt/ropbot/app/sms_watch.py >> /var/log/ropbot/sms_watch.log 2>&1
+# Подтверждение продаж у РОПа: новые «ТС куплен» -> вопрос в бот (02.09.2026)
+*/10 * * * * docker exec -i ropbot-tgbot-1 python - < /opt/ropbot/app/sale_watch.py >> /var/log/ropbot/sale_watch.log 2>&1
+# Telegram: пул персональных ссылок + контрольная сумма подписчиков (добавлено 07.09.2026)
+*/5 * * * * flock -n /run/lock/tg_pool.lock /opt/ropbot/bin/tg_pool.sh >> /var/log/ropbot/tg_pool.log 2>&1
+# Telegram → Метрика: офлайн-конверсии «Подписка ТГ» (609783020). Заработает при токене с записью.
+*/10 * * * * docker exec -i ropbot-tgbot-1 python - < /opt/ropbot/app/tg_offline.py >> /var/log/ropbot/tg_offline.log 2>&1

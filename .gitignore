@@ -1,0 +1,32 @@
+# === Секреты — никогда в репозиторий ===
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+
+# === Данные, бэкапы, генерируемое ===
+backups/
+web/d/
+lab/out/
+tmp/
+*.db
+*.sqlite
+*.sqlite3
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# === Ручные бэкапы больше не создаём: для этого есть git ===
+*.bak
+*.bak-*
+*.bak2*
+
+# === Логи ===
+*.log

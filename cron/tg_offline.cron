@@ -1,0 +1,2 @@
+# Telegram → Метрика: офлайн-конверсии «Подписка ТГ» (609783020). Заработает при токене с записью.
+*/10 * * * * docker exec -i ropbot-tgbot-1 python - < /opt/ropbot/app/tg_offline.py >> /var/log/ropbot/tg_offline.log 2>&1
