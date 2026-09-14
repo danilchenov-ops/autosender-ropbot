@@ -125,7 +125,11 @@ SELECT l.id, l.status_semantic,
        EXISTS (SELECT 1 FROM leads p
                WHERE p.phone_e164 = l.phone_e164 AND p.id <> l.id
                  AND p.date_create < l.date_create
-                 AND p.date_create >= l.date_create - interval '365 days') AS repeat_client
+                 AND p.date_create >= l.date_create - interval '365 days') AS repeat_client,
+       EXISTS (SELECT 1 FROM stage_history sh WHERE sh.entity_kind='lead'
+               AND sh.owner_id = l.id AND sh.stage_id IN ('11','12','13')) AS prepay,
+       EXTRACT(hour FROM l.date_create AT TIME ZONE 'Asia/Vladivostok') AS hh,
+       EXTRACT(dow  FROM l.date_create AT TIME ZONE 'Asia/Vladivostok') AS dw
 FROM leads l
 WHERE l.source_id IS DISTINCT FROM 'PARTNER'
 """
@@ -133,7 +137,7 @@ WHERE l.source_id IS DISTINCT FROM 'PARTNER'
 
 def features_v1(row):
     (_id, _st, campaign, source, phone_kind, office, comments, form_text,
-     page_url, repeat_client) = row
+     page_url, repeat_client, _prepay, hh, dw) = row
     f = {"campaign": campaign, "source": source, "phone_kind": phone_kind,
          "office_hours": "1" if office else "0",
          "repeat_client": "1" if repeat_client else "0"}
@@ -149,18 +153,34 @@ def features_v1(row):
     f["url"] = ("lot" if RX_LOT.search(u) else
                 "filtered" if RX_FILTER.search(u) else
                 "page" if u else "none")
+    h = int(hh)
+    f["hour"] = "night" if h < 10 or h >= 23 else "day" if h < 18 else "eve"
+    f["dow"] = "we" if int(dw) in (0, 6) else "wd"
     return f
 
 
 V1_FACTORS = ["campaign", "source", "form_srok", "free_text", "url",
-              "office_hours", "phone_kind", "repeat_client"]
+              "office_hours", "phone_kind", "repeat_client", "hour", "dow"]
 
+# target: "sale" — status_semantic='S'; "prepay" — переход в 11/12/13 (stage_history).
+# Переходы в 11/12/13 есть только с апреля 2026, поэтому у цели prepay окно короче.
+# Параметры подобраны 15.09.2026, 5-fold CV — см. changelog реестра.
 MODELS = {
     "v2b": {"sql": V2_SQL, "features": features_v2, "factors": V2_FACTORS,
-            "pair": None},
+            "pair": None, "target": "sale", "k": 75, "min_n": 30,
+            "from_days": 440, "to_days": 45},
     "v1": {"sql": V1_SQL, "features": features_v1, "factors": V1_FACTORS,
-           "pair": ("campaign", "source")},  # источник добавляется, только если нет веса кампании
+           "pair": ("campaign", "source"),  # источник добавляется, только если нет веса кампании
+           "target": "prepay", "k": 75, "min_n": 30,
+           "from_days": 140, "to_days": 14},
 }
+
+
+def label(model, row):
+    """1, если заявка дошла до целевого события модели."""
+    if MODELS[model]["target"] == "prepay":
+        return 1 if row[10] else 0
+    return 1 if row[1] == "S" else 0
 
 # ── Общий механизм ───────────────────────────────────────────────────────────
 
@@ -182,19 +202,20 @@ def score_p(f, weights, base_logit, factors, pair):
 def train(model):
     cfg_m = MODELS[model]
     with db() as conn:
+        K, MIN_N = cfg_m["k"], cfg_m["min_n"]
         rows = conn.execute(
             cfg_m["sql"] + """
               AND l.date_create >= now() - (%s || ' days')::interval
               AND l.date_create <  now() - (%s || ' days')::interval""",
-            (TRAIN_FROM_DAYS, TRAIN_TO_DAYS)).fetchall()
+            (cfg_m["from_days"], cfg_m["to_days"])).fetchall()
         if len(rows) < 500:
             log.error("%s: слишком мало лидов для обучения (%s)", model, len(rows))
             return
         n_tot = len(rows)
-        s_tot = sum(1 for r in rows if r[1] == "S")
+        s_tot = sum(label(model, r) for r in rows)
         p0 = s_tot / n_tot
-        log.info("%s: обучение на %s лидах, %s продаж, база %.2f%%",
-                 model, n_tot, s_tot, 100 * p0)
+        log.info("%s: обучение на %s лидах, %s событий (%s), база %.2f%%",
+                 model, n_tot, s_tot, cfg_m["target"], 100 * p0)
 
         stats = {fa: {} for fa in cfg_m["factors"]}
         cache = []
@@ -203,7 +224,7 @@ def train(model):
             cache.append(f)
             for fa in cfg_m["factors"]:
                 n, s = stats[fa].get(f[fa], (0, 0))
-                stats[fa][f[fa]] = (n + 1, s + (1 if r[1] == "S" else 0))
+                stats[fa][f[fa]] = (n + 1, s + label(model, r))
 
         odds0 = p0 / (1 - p0)
         weights = {}
@@ -249,7 +270,9 @@ def reason_text_v1(fa, v, w):
          ("free_text", "specific"): "конкретика в запросе", ("repeat_client", "1"): "повторное обращение",
          ("office_hours", "0"): "пришла ночью", ("office_hours", "1"): "рабочие часы",
          ("phone_kind", "landline"): "стационарный номер", ("url", "lot"): "страница лота",
-         ("url", "filtered"): "подбор по фильтрам"}
+         ("url", "filtered"): "подбор по фильтрам",
+         ("hour", "night"): "пришла ночью", ("hour", "eve"): "пришла вечером",
+         ("dow", "we"): "выходной день"}
     if (fa, v) in m:
         return m[(fa, v)]
     if fa in ("campaign", "source"):
@@ -325,7 +348,7 @@ def classes(model):
             cfg_m["sql"] + """
               AND l.date_create >= now() - (%s || ' days')::interval
               AND l.date_create <  now() - (%s || ' days')::interval""",
-            (TRAIN_FROM_DAYS, TRAIN_TO_DAYS)).fetchall()
+            (cfg_m["from_days"], cfg_m["to_days"])).fetchall()
         agg = {}
         for r in rows:
             f = cfg_m["features"](r)
@@ -333,12 +356,13 @@ def classes(model):
             pct = max(0, min(100, sum(1 for q in quantiles if q <= p) - 1))
             g = "A" if pct >= GRADE_A else "B" if pct >= GRADE_B else "C" if pct >= GRADE_C else "D"
             n, sl = agg.get(g, (0, 0))
-            agg[g] = (n + 1, sl + (1 if r[1] == "S" else 0))
-        print(f"{model} (окно {TRAIN_FROM_DAYS}-{TRAIN_TO_DAYS} дн., база {100*p0:.2f}%)")
+            agg[g] = (n + 1, sl + label(model, r))
+        print(f"{model} (окно {cfg_m['from_days']}-{cfg_m['to_days']} дн., "
+              f"цель {cfg_m['target']}, база {100*p0:.2f}%)")
         for g in "ABCD":
             n, sl = agg.get(g, (0, 0))
             if n:
-                print(f"  {g}: лидов {n}, продаж {sl}, конверсия {100.0*sl/n:.2f}%")
+                print(f"  {g}: лидов {n}, событий {sl}, конверсия {100.0*sl/n:.2f}%")
 
 
 if __name__ == "__main__":
