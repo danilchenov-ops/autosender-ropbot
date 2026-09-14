@@ -33,3 +33,7 @@ venv/
 
 # Временные каталоги сборки панелей (web/build.sh)
 web/.build.*/
+
+# Ключ сервисного аккаунта Google Search Console
+gsc-sa.json
+venv-gsc/
