@@ -32,7 +32,7 @@ def ping():
             f"{BASE}/google/v1beta/models/{MODEL}:generateContent",
             headers={"Authorization": f"Bearer {KEY}"},
             json={"contents": [{"parts": [{"text": "ok"}]}],
-                  "generationConfig": {"maxOutputTokens": 5,
+                  "generationConfig": {"maxOutputTokens": 3500,
                                        "thinkingConfig": {"thinkingBudget": 0}}},
             timeout=40)
         return r.status_code, r.text[:200]
@@ -46,7 +46,9 @@ def stalled(conn):
         """SELECT (SELECT count(*) FROM call_extractions
                      WHERE created_at > now() - interval '1 hour'),
                   (SELECT count(*) FROM llm_queue
-                     WHERE status IN ('pending','failed'))""").fetchone()
+                     WHERE status = 'pending'
+                        OR (status = 'failed'
+                            AND updated_at > now() - interval '24 hours'))""").fetchone()
     return row[0] == 0 and row[1] > 0
 
 
@@ -66,7 +68,7 @@ def bosses(conn):
 def main():
     with db() as conn:
         code, body = ping()
-        low = code == 402 or (code == 429 and stalled(conn))
+        low = code == 402 or stalled(conn)
         if not low:
             log.info("Баланс ProxyAPI: пробный запрос %s, всё в порядке", code)
             return
@@ -75,7 +77,7 @@ def main():
                      code, COOLDOWN_H)
             return
         reason = ("баланс исчерпан (402 Payment Required)" if code == 402
-                  else "API отбивает запросы (429) и разбор встал")
+                  else f"разбор встал (за час ни одной карточки, пробный запрос {code})")
         text = (
             "⚠️ *ProxyAPI: закончились деньги*\n\n"
             f"Разбор разговоров остановлен — {reason}.\n"
