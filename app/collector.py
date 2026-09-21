@@ -8,6 +8,7 @@ from common import Bitrix, BitrixError, cfg, db, get_state, log, set_state
 from migrate import migrate
 
 OVERLAP = dt.timedelta(minutes=30)  # перекрытие окна, чтобы не терять звонки на границе
+REFETCH_GAP = dt.timedelta(minutes=60)  # склейка соседних звонков без записи в одно окно перечитки
 
 # CALL_FAILED_CODE: 200 — успешно, остальное считаем неуспехом
 SUCCESS_CODES = {"200", "0", ""}
@@ -138,6 +139,72 @@ def sync_calls(bx, conn):
     return count
 
 
+def refetch_missing_records(bx, conn):
+    """Перечитка содержательных звонков, у которых запись ещё не пришла из Билайна.
+
+    Билайн прикрепляет запись к звонку с задержкой, в будние вечера (с 17:00 Влд) —
+    больше 30 минут. Окно sync_calls отстаёт от самого свежего звонка только на
+    OVERLAP, поэтому такой звонок больше не перечитывался: record_url оставался
+    пустым, в asr_queue он не попадал, сводки в карточке не было. С 14.09.2026 так
+    терялось от 4 до 37 % разговоров за день (найдено 21.09.2026).
+
+    Раз в REFETCH_INTERVAL секунд перечитываем звонки без записи за REFETCH_DAYS дней.
+    Пол refetch_floor — момент первого запуска: что старше, не трогаем (решение
+    Тимофея 21.09.2026 — без прогона архива). Чтобы долить архив, достаточно
+    сдвинуть sync_state.refetch_floor назад.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    last = get_state(conn, "last_refetch")
+    if last and now - dt.datetime.fromisoformat(last) < dt.timedelta(seconds=cfg.REFETCH_INTERVAL):
+        return 0
+    floor = get_state(conn, "refetch_floor")
+    if not floor:
+        floor = now.isoformat()
+        set_state(conn, "refetch_floor", floor)
+    since = max(dt.datetime.fromisoformat(floor), now - dt.timedelta(days=cfg.REFETCH_DAYS))
+
+    rows = conn.execute(
+        """SELECT b24_call_id, call_start, duration FROM calls
+           WHERE call_start >= %s AND duration >= %s
+             AND record_url IS NULL AND record_file_id IS NULL
+           ORDER BY call_start""",
+        (since, cfg.MIN_CALL_SEC),
+    ).fetchall()
+    set_state(conn, "last_refetch", now.isoformat())
+    if not rows:
+        return 0
+
+    missing = {str(r[0]) for r in rows}
+    # соседние звонки склеиваем в одно окно, чтобы не ходить в Битрикс за каждым
+    windows = []
+    for _, start, duration in rows:
+        end = start + dt.timedelta(seconds=duration or 0)
+        if windows and start - windows[-1][1] < REFETCH_GAP:
+            windows[-1][1] = max(windows[-1][1], end)
+        else:
+            windows.append([start, end])
+
+    fixed = 0
+    for w_start, w_end in windows:
+        params = {
+            "FILTER": {
+                ">CALL_START_DATE": (w_start - dt.timedelta(minutes=1)).isoformat(),
+                "<CALL_START_DATE": (w_end + dt.timedelta(minutes=1)).isoformat(),
+            },
+            "SORT": "CALL_START_DATE",
+            "ORDER": "ASC",
+        }
+        for c in bx.list_all("voximplant.statistic.get", params):
+            if str(c.get("ID")) not in missing:
+                continue
+            if c.get("CALL_RECORD_URL") or c.get("RECORD_FILE_ID"):
+                upsert_call(conn, c)
+                fixed += 1
+    log.info("Перечитка записей: без записи %s, окон %s, запись пришла у %s",
+             len(rows), len(windows), fixed)
+    return fixed
+
+
 def main():
     migrate()
     bx = Bitrix()
@@ -155,6 +222,11 @@ def main():
                     set_state(conn, "last_users_sync", dt.datetime.now(dt.timezone.utc).isoformat())
 
                 sync_calls(bx, conn)
+
+                try:
+                    refetch_missing_records(bx, conn)
+                except BitrixError as e:
+                    log.error("Перечитка записей не удалась: %s", e)
 
                 if cfg.SYNC_CRM:
                     try:

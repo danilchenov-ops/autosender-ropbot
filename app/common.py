@@ -20,6 +20,9 @@ class Cfg:
     BACKFILL_DAYS = int(os.getenv("BACKFILL_DAYS", "90"))
     POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "300"))
     B24_RATE_SLEEP = float(os.getenv("B24_RATE_SLEEP", "0.5"))  # 2 запроса/сек
+    # перечитка звонков, у которых запись из Билайна пришла позже окна OVERLAP
+    REFETCH_INTERVAL = int(os.getenv("REFETCH_INTERVAL", "1800"))  # секунды
+    REFETCH_DAYS = int(os.getenv("REFETCH_DAYS", "3"))
 
     SYNC_CRM = os.getenv("SYNC_CRM", "1") not in ("0", "false", "no")
     CRM_SINCE_DAYS = int(os.getenv("CRM_SINCE_DAYS", "90"))
