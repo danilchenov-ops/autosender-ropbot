@@ -107,6 +107,13 @@ def main():
             try:
                 bx.call("crm.lead.update", {"id": lead_id, "fields": fields})
             except Exception as e:  # noqa: BLE001
+                if "not found" in str(e).lower():
+                    # удалён в Битриксе, а sweep_deleted_leads видит только открытые —
+                    # помечаем сами, чтобы не возвращаться к нему каждый прогон
+                    conn.execute("UPDATE leads SET deleted_at = coalesce(deleted_at, now()) "
+                                 "WHERE id = %s", (lead_id,))
+                    log.warning("маркировка, лид %s: удалён в Битриксе, помечен deleted_at", lead_id)
+                    continue
                 errors += 1
                 streak += 1
                 log.warning("маркировка, лид %s: %s", lead_id, str(e)[:150])
