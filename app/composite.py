@@ -218,13 +218,14 @@ def push(limit=500):
     """Отправляет балл в поле «Скоринг». Название лида не трогает — этим
     занимается marker.py, единственный владелец TITLE."""
     bx = Bitrix()
-    sent = errors = 0
+    sent = errors = streak = 0
     with db() as conn:
         rows = conn.execute(
             """SELECT c.lead_id, c.score FROM lead_composite c
                JOIN leads l ON l.id = c.lead_id
                LEFT JOIN lead_composite_sent s ON s.lead_id = c.lead_id
                WHERE s.score IS DISTINCT FROM c.score
+                 AND l.deleted_at IS NULL         -- удалённые в Битриксе: «Lead is not found»
                  AND (l.date_create >= %s          -- обычная разметка
                       OR c.crown                   -- живой лид из прошлого
                       OR s.lead_id IS NOT NULL)    -- балл уже стоит, держим свежим
@@ -234,8 +235,9 @@ def push(limit=500):
                 bx.call("crm.lead.update", {"id": lead_id, "fields": {FIELD: score}})
             except Exception as e:  # noqa: BLE001
                 errors += 1
+                streak += 1
                 log.warning("скоринг, лид %s: %s", lead_id, str(e)[:150])
-                if errors >= 10:
+                if streak >= 10:
                     log.error("скоринг: слишком много ошибок подряд, стоп")
                     break
                 continue
@@ -243,6 +245,7 @@ def push(limit=500):
                 """INSERT INTO lead_composite_sent (lead_id, score, sent_at)
                    VALUES (%s,%s,now()) ON CONFLICT (lead_id) DO UPDATE
                    SET score=EXCLUDED.score, sent_at=now()""", (lead_id, score))
+            streak = 0   # стоп — по ошибкам подряд, а не за прогон
             sent += 1
     if sent or errors:
         log.info("скоринг: отправлено %s (ошибок %s)", sent, errors)

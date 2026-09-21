@@ -26,7 +26,7 @@
 # Панели: живые страницы (дашборды) — каждую минуту, ~2 с одним процессом
 * * * * * flock -n /tmp/dash.lock /opt/ropbot/web/build_now.sh >> /var/log/ropbot/dash.log 2>&1
 # Панели: всё остальное (страница «Скрипт», хаб, журнал ленты) — раз в 15 минут
-*/15 * * * * flock -n /tmp/dash.lock /opt/ropbot/web/build.sh >> /var/log/ropbot/dash.log 2>&1
+*/15 * * * * flock -w 55 /tmp/dash.lock /opt/ropbot/web/build.sh >> /var/log/ropbot/dash.log 2>&1
 # Статусы лидов в stage_history: Битрикс отдаёт STATUS_ID, старый образ пишет пусто.
 # Дозаполнение до пересборки образа (crm_sync.py уже исправлен). Добавлено 25.08.2026.
 13,43 * * * * docker exec -i ropbot-collector-1 python - --days 3 < /opt/ropbot/app/stagehist_fix.py >> /var/log/ropbot/stagehist_fix.log 2>&1
@@ -55,3 +55,4 @@
 */5 * * * * flock -n /run/lock/tg_pool.lock /opt/ropbot/bin/tg_pool.sh >> /var/log/ropbot/tg_pool.log 2>&1
 # Telegram → Метрика: офлайн-конверсии «Подписка ТГ» (609783020). Заработает при токене с записью.
 */10 * * * * docker exec -i ropbot-tgbot-1 python - < /opt/ropbot/app/tg_offline.py >> /var/log/ropbot/tg_offline.log 2>&1
+0 9 * * 1 /opt/knowledge/kbcheck.sh >> /var/log/kbcheck.log 2>&1

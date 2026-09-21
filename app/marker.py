@@ -61,6 +61,7 @@ WITH w AS (
     LEFT JOIN lead_composite c ON c.lead_id = l.id
     LEFT JOIN lead_marks mm ON mm.lead_id = l.id
     WHERE l.source_id IS DISTINCT FROM 'PARTNER'
+      AND l.deleted_at IS NULL           -- удалённые в Битриксе: crm.lead.update даёт «Lead is not found»
       AND (l.date_create >= %(since)s     -- обычная разметка
            OR coalesce(c.crown, false)    -- живой лид из прошлого — корону ставим
            OR mm.sym IS NOT NULL)         -- корону, которая погасла, надо снять
@@ -81,7 +82,7 @@ def main():
     migrate()
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else 300
     bx = Bitrix()
-    done = errors = 0
+    done = errors = streak = 0
     with db() as conn:
         rows = conn.execute(WANT_SQL, {"since": SINCE, "limit": limit, "crown": CROWN,
                                        "a": MARKS["A"], "b": MARKS["B"]}).fetchall()
@@ -107,8 +108,9 @@ def main():
                 bx.call("crm.lead.update", {"id": lead_id, "fields": fields})
             except Exception as e:  # noqa: BLE001
                 errors += 1
+                streak += 1
                 log.warning("маркировка, лид %s: %s", lead_id, str(e)[:150])
-                if errors >= 10:
+                if streak >= 10:
                     log.error("маркировка: слишком много ошибок подряд, стоп")
                     break
                 continue
@@ -123,6 +125,7 @@ def main():
             if new_title is not None:
                 conn.execute("UPDATE leads SET title=%s WHERE id=%s", (new_title, lead_id))
             done += 1
+            streak = 0   # стоп — по ошибкам подряд, а не за прогон
     if done or errors:
         log.info("маркировка: обновлено %s лидов (ошибок %s)", done, errors)
 
