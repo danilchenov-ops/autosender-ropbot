@@ -41,14 +41,14 @@ def ping():
 
 
 def stalled(conn):
-    """Разбор реально встал: за час ни одной новой карточки, но очередь есть."""
+    """Разбор реально встал: за час ни одной новой карточки, а очередь pending
+    не пуста. Failed не считаем: один звонок, упавший на сетевом сбое, сутки
+    держал бы условие и каждый тихий вечерний час давал ложный алерт (22.09)."""
     row = conn.execute(
         """SELECT (SELECT count(*) FROM call_extractions
                      WHERE created_at > now() - interval '1 hour'),
-                  (SELECT count(*) FROM llm_queue
-                     WHERE status = 'pending'
-                        OR (status = 'failed'
-                            AND updated_at > now() - interval '24 hours'))""").fetchone()
+                  (SELECT count(*) FROM llm_queue WHERE status = 'pending')"""
+    ).fetchone()
     return row[0] == 0 and row[1] > 0
 
 
@@ -80,13 +80,20 @@ def main():
                   else f"разбор встал (за час ни одной карточки, пробный запрос {code})")
         head = ("⚠️ *ProxyAPI: закончились деньги*" if code == 402
                 else "⚠️ *Разбор разговоров встал*")
+        if code == 402:
+            tail = ("Скрипт, оценка качества и договорённости не считаются, "
+                    "пока не пополните баланс.\n\n"
+                    "Пополнить: https://proxyapi.ru — после этого разборы "
+                    "догонят сами.")
+        else:
+            tail = ("Это не деньги: пробный запрос проходит. Похоже на сеть "
+                    "или сам сервис — смотреть `docker logs ropbot-llm-1` "
+                    "и очередь llm_queue. Разборы догонят сами, как только "
+                    "пойдёт.")
         text = (
             head + "\n\n"
             f"Разбор разговоров остановлен — {reason}.\n"
-            "Скрипт, оценка качества и договорённости не считаются, "
-            "пока не пополните баланс.\n\n"
-            "Пополнить: https://proxyapi.ru — после этого разборы "
-            "догонят сами.")
+            + tail)
         sent_ok = False
         for chat in bosses(conn):
             try:
