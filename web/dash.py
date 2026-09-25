@@ -1681,6 +1681,23 @@ CLOSED_SQL = SOLD_CTE + """
    GROUP BY 1, 2
 """
 
+# Предоплаты по месяцу первого перехода лида в «Оплата обеспечительного» (11),
+# «На торгах» (12) или «ТС куплен» (13) — определение из projects/plan-dogovory.md
+# (09.09.2026): только 11 брать нельзя, 44 % купивших его минуют; CONVERTED
+# не считаем. Как и продажи — без фильтра источника, по текущему ответственному.
+PREPAY_SQL = """
+  WITH c AS (SELECT owner_id, min(created_time) AS tc
+               FROM stage_history
+              WHERE entity_kind = 'lead' AND stage_id IN ('11', '12', '13')
+              GROUP BY 1)
+  SELECT l.assigned_by,
+         to_char(date_trunc('month', c.tc AT TIME ZONE %(tz)s), 'YYYY-MM'),
+         count(*)
+    FROM c JOIN leads l ON l.id = c.owner_id
+   WHERE c.tc >= date_trunc('month', now()) - make_interval(months => %(back)s)
+   GROUP BY 1, 2
+"""
+
 CALLS_SQL = """
   SELECT uid, to_char(date_trunc('month', ts), 'YYYY-MM') AS m,
          extract(isodow from ts)::int AS dow,
@@ -1781,6 +1798,27 @@ def dash_blocks(conn, mgrs, now):
     cl_tot = "".join(f'<td class="num"><b>{sum(n for (u, m), n in closed.items() if m == k)}</b></td>'
                      for k in keys)
 
+    # ── предоплаты по месяцам ────────────────────────────────────────────────
+    prepay = {(u, m): n for u, m, n in conn.execute(PREPAY_SQL, p).fetchall()}
+    pp_max = max(prepay.values() or [1])
+    pp_rows = []
+    for uid, name in mgrs:
+        tds = []
+        for k in keys:
+            v = prepay.get((uid, k))
+            if not v:
+                tds.append('<td class="dim">·</td>')
+                continue
+            d1, d2 = month_range(k)
+            tds.append(heat(v, pp_max, str(v),
+                            href=crm_list(uid, ["11", "12", "13"], "DATE_MODIFY", d1, d2)))
+        pp_rows.append(f'<tr><td class="mname">{e(short(name))}</td>{"".join(tds)}</tr>')
+    pp_rows.append('<tr><td class="mname dim">Другие ответственные</td>'
+                   + "".join(f'<td class="num">{sum(n for (u, m), n in prepay.items() if m == k and u not in five) or "·"}</td>'
+                             for k in keys) + '</tr>')
+    pp_tot = "".join(f'<td class="num"><b>{sum(n for (u, m), n in prepay.items() if m == k)}</b></td>'
+                     for k in keys)
+
     tot_tds = []
     for k in keys:
         l = sum(v[0] for (u, mm), v in conv.items() if mm == k)
@@ -1862,6 +1900,18 @@ def dash_blocks(conn, mgrs, now):
     продажи вне пятёрки. Таблица слева отвечает на другой вопрос — какая
     доля заявок месяца доведена до сделки. Цифры кликабельны — открывают
     те же заявки в CRM.</p>
+</section>
+
+<h2>Предоплаты по месяцам</h2>
+<section class="card">
+  <table><thead><tr><th>Менеджер</th>{head}</tr></thead>
+  <tbody>{''.join(pp_rows)}</tbody>
+  <tfoot><tr><td class="mname">Отдел</td>{pp_tot}</tr></tfoot></table>
+  <p class="crit-f" style="margin-top:12px">Предоплата = заявка впервые перешла
+    в «Оплата обеспечительного», «На торгах» или «ТС куплен» — по месяцу этого
+    перехода, менеджеру, который отвечает за заявку сейчас. Одна заявка считается
+    один раз, даже если прошла все три стадии. Клик по цифре открывает в CRM
+    заявки этих стадий, изменённые в том же месяце — список приблизительный.</p>
 </section>
 
 <h2>Работа в выходные</h2>
